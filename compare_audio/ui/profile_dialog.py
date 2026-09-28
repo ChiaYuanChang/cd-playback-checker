@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QProgressDialog,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -21,13 +22,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from compare_audio.audio.cd_audio import CdaError, is_cda, parse_cda
 from compare_audio.core.analysis_config import AnalysisConfig
 from compare_audio.core.audio_io import audio_duration_s
 from compare_audio.core.reference_program import TrackSource
 from compare_audio.core.time_format import format_clock
 from compare_audio.profiles.test_profile import TestProfile
+from compare_audio.ui import app_paths
+from compare_audio.ui.workers import CdRipWorker
 
 AUDIO_FILTER = "音訊檔 (*.wav *.flac *.mp3 *.aif *.aiff *.ogg);;所有檔案 (*)"
+REFERENCE_FILTER = (
+    "音訊檔與 CD 音軌 (*.wav *.flac *.mp3 *.aif *.aiff *.ogg *.cda);;"
+    "CD 音軌 (*.cda);;所有檔案 (*)"
+)
 
 
 class ProfileDialog(QDialog):
@@ -38,6 +46,7 @@ class ProfileDialog(QDialog):
         self.setWindowTitle("編輯測試片" if profile else "新增測試片")
         self.resize(720, 460)
         self._base = profile
+        self._rip_worker: CdRipWorker | None = None
         self.name_edit = QLineEdit(profile.name if profile else "")
         self.name_edit.setPlaceholderText("例如：測試片 A（6 首）")
         self.description_edit = QLineEdit(profile.description if profile else "")
@@ -77,7 +86,9 @@ class ProfileDialog(QDialog):
         box.accepted.connect(self._accept)
         box.rejected.connect(self.reject)
         hint = QLabel(
-            "依播放順序排列曲目。建議使用從同一張 CD 抓下的 WAV / FLAC 無損檔。"
+            "依播放順序排列曲目。建議使用從同一張 CD 抓下的 WAV / FLAC 無損檔；"
+            "也可以把 CD 放進電腦，直接選光碟裡的 Track01.cda 等音軌，"
+            "程式會把它們讀成 WAV 存在這台電腦上，之後就不需要光碟。"
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #666;")
@@ -109,9 +120,60 @@ class ProfileDialog(QDialog):
         self.table.setItem(row, 2, item)
 
     def _add_files(self) -> None:
-        paths, _ = QFileDialog.getOpenFileNames(self, "選擇參考音檔", "", AUDIO_FILTER)
-        for path in sorted(paths, key=lambda p: Path(p).name.lower()):
-            self._append(Path(path).stem, path)
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "選擇參考音檔", "", REFERENCE_FILTER
+        )
+        self.add_paths(paths)
+
+    def add_paths(self, paths: list[str]) -> None:
+        ordered = sorted(paths, key=lambda p: Path(p).name.lower())
+        for path in ordered:
+            if not is_cda(path):
+                self._append(Path(path).stem, path)
+        self._refresh_total()
+        tracks = [p for p in ordered if is_cda(p)]
+        if tracks:
+            self._rip(tracks)
+
+    def _rip(self, cda_paths: list[str]) -> None:
+        """Read the CD tracks into WAV files (the disc goes into the player later)."""
+        try:
+            serial = parse_cda(cda_paths[0]).disc_serial
+        except CdaError as exc:
+            QMessageBox.warning(self, "無法讀取 CD 音軌", str(exc))
+            return
+        progress = QProgressDialog("準備讀取光碟…", "取消", 0, 1000, self)
+        progress.setWindowTitle("從 CD 讀取音軌")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        worker = CdRipWorker(cda_paths, app_paths.cd_audio_dir() / f"disc-{serial:08X}")
+        total = len(cda_paths)
+
+        def on_progress(index: int, fraction: float) -> None:
+            progress.setLabelText(f"讀取第 {index + 1} / {total} 軌…")
+            progress.setValue(int(1000 * (index + fraction) / total))
+
+        worker.progress.connect(on_progress)
+        worker.ripped.connect(self._on_ripped)
+        worker.failed.connect(
+            lambda message: QMessageBox.warning(self, "無法讀取 CD 音軌", message)
+        )
+        worker.finished.connect(progress.close)
+        progress.canceled.connect(worker.cancel)
+        self._rip_worker = worker
+        worker.start()
+
+    def done(self, result: int) -> None:  # closing: never leave the reader running
+        if self._rip_worker is not None and self._rip_worker.isRunning():
+            self._rip_worker.cancel()
+            self._rip_worker.wait()
+        super().done(result)
+
+    def _on_ripped(self, tracks: list[tuple[str, str]]) -> None:
+        for title, path in tracks:
+            self._append(title, path)
         self._refresh_total()
 
     def _remove(self) -> None:

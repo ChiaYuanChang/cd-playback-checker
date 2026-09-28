@@ -17,6 +17,13 @@ def profiles_dir() -> Path:
     return path
 
 
+def cd_audio_dir() -> Path:
+    """Where tracks read from audio CDs (.cda) are kept as WAV files."""
+    path = _location(QStandardPaths.StandardLocation.AppDataLocation) / "cd_audio"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def cache_dir() -> Path:
     path = _location(QStandardPaths.StandardLocation.CacheLocation) / "reference"
     path.mkdir(parents=True, exist_ok=True)

@@ -14,11 +14,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import soundfile as sf
 import soxr
 from pydantic import BaseModel, Field
 
 from compare_audio.core.analysis_config import AnalysisConfig
+from compare_audio.core.audio_io import open_audio
 from compare_audio.core.spectral_features import FeatureExtractor, FeatureSet
 
 _READ_BLOCK = 1 << 16
@@ -125,7 +125,7 @@ def _decode_into(
     """Stream one file through the extractor; returns (n_samples, features)."""
     parts: list[FeatureSet] = []
     produced = 0
-    with sf.SoundFile(path) as source:
+    with open_audio(path) as source:
         total = max(1, source.frames)
         resampler = (
             None
@@ -136,7 +136,7 @@ def _decode_into(
         )
         done = 0
         while True:
-            block = source.read(_READ_BLOCK, dtype="float32", always_2d=True)
+            block = source.read(_READ_BLOCK)
             last = len(block) == 0
             mono = block.mean(axis=1) if len(block) else np.zeros(0, np.float32)
             if resampler is not None:

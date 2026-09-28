@@ -57,6 +57,19 @@ build_windows.bat
 
 錄音檔（WAV）和 `.result.json` 會存在「錄音存放位置」，之後可以用「檔案 → 分析錄音檔…」重新分析。
 
+### 直接從 CD 匯入參考音軌（.cda）
+
+在 Windows 上把那張 CD 放進電腦的光碟機，然後：
+1. 在「新增／編輯測試片」按「加入音檔…」。
+2. 切到光碟機，選 `Track01.cda`、`Track02.cda` 等檔案，可以一次多選。
+
+`.cda` 本身不是音訊檔，只是 Windows 替每一軌建立的 44 bytes 捷徑，記錄第幾軌、從光碟哪裡開始、多長，真正的聲音在光碟上。程式會直接讀光碟上的原始 CD 音訊，每一軌存成一個 16-bit WAV，跟光碟上的資料逐位元相同。存放位置是 `%APPDATA%\CompareAudio\CompareAudio\cd_audio\disc-XXXXXXXX\`。之後光碟可以拿去放進待測的 CD 機，不需要再放在電腦裡。
+
+- 讀取時光碟必須在光碟機裡。只把 `.cda` 複製到別的地方是沒有用的，因為複製到的只是捷徑。
+- 讀取速度取決於光碟機，一首 5 分鐘的歌大約十幾秒到一分鐘。
+- 程式沒有做 EAC 那種反覆比對的「安全模式」讀取，請用乾淨、沒刮傷的光碟當參考。讀取失敗時會顯示光碟上出錯的位置。
+- macOS 會把音樂 CD 顯示成 AIFF 音軌，直接選那些 `.aiff` 檔即可。
+
 ### 收音建議
 
 - **麥克風離喇叭越近越好**（固定在 5～10 公分），效果比任何演算法都好，也能抓到更短的無聲。
@@ -128,7 +141,7 @@ compare_audio/
 │   ├── recording_analysis.py  離線分析整段錄音
 │   ├── live_analysis.py       錄音中的即時分析
 │   └── report_export.py       HTML / CSV / JSON 報告
-├── audio/         sounddevice：列出麥克風、收音、用檔案模擬收音、試聽
+├── audio/         sounddevice：列出麥克風、收音、用檔案模擬收音、試聽；cd_audio.py 讀取 CD 音軌（.cda）
 ├── profiles/      測試片設定檔（JSON）
 └── ui/            PySide6 + pyqtgraph 介面
 tools/             合成測試音樂、聲學模擬、評估工具

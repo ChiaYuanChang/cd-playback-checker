@@ -11,6 +11,7 @@ import soxr
 from PySide6.QtCore import QThread, Signal
 
 from compare_audio.audio.audio_sources import AudioSource
+from compare_audio.audio.cd_audio import CdaCancelled, parse_cda, rip_track
 from compare_audio.core.audio_io import load_mono
 from compare_audio.core.live_analysis import LiveAnalyzer, LiveStatus
 from compare_audio.core.recording_analysis import analyze_signal
@@ -183,6 +184,42 @@ class SessionWorker(QThread):
         level = env[:usable].reshape(-1, factor).max(axis=1)
         t = (np.arange(len(level)) + 0.5) * factor / rate
         return LiveUpdate(live.status(), rec, program, t, level, self.source.overflows)
+
+
+class CdRipWorker(QThread):
+    """Copies audio CD tracks (.cda) to WAV files so the disc is not needed later."""
+
+    progress = Signal(int, float)  # index in the list, fraction of that track
+    ripped = Signal(list)  # list[tuple[str, str]]: (title, wav path)
+    failed = Signal(str)
+
+    def __init__(self, cda_paths: list[str], out_dir: Path) -> None:
+        super().__init__()
+        self.cda_paths = cda_paths
+        self.out_dir = out_dir
+        self._cancel = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel.set()
+
+    def run(self) -> None:
+        tracks: list[tuple[str, str]] = []
+        try:
+            for index, path in enumerate(self.cda_paths):
+                number = parse_cda(path).track_number
+                target = rip_track(
+                    path,
+                    self.out_dir / f"Track{number:02d}.wav",
+                    progress=lambda f, i=index: self.progress.emit(i, f),
+                    cancelled=self._cancel.is_set,
+                )
+                tracks.append((f"第 {number} 軌", str(target)))
+        except CdaCancelled:
+            return
+        except Exception as exc:  # shown to the user, never crash the thread
+            self.failed.emit(str(exc))
+            return
+        self.ripped.emit(tracks)
 
 
 class FileAnalysisWorker(QThread):
