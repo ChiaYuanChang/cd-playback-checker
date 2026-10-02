@@ -29,6 +29,7 @@ from compare_audio.core.reference_program import TrackSource
 from compare_audio.core.time_format import format_clock
 from compare_audio.profiles.test_profile import TestProfile
 from compare_audio.ui import app_paths
+from compare_audio.ui.sensitivity_control import SensitivityControl
 from compare_audio.ui.workers import CdRipWorker
 
 AUDIO_FILTER = "音訊檔 (*.wav *.flac *.mp3 *.aif *.aiff *.ogg);;所有檔案 (*)"
@@ -80,6 +81,10 @@ class ProfileDialog(QDialog):
         form = QFormLayout()
         form.addRow("名稱", self.name_edit)
         form.addRow("說明", self.description_edit)
+        self.sensitivity = SensitivityControl(
+            profile.analysis.sensitivity if profile else 50
+        )
+        form.addRow("辨識靈敏度", self.sensitivity)
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
@@ -230,7 +235,9 @@ class ProfileDialog(QDialog):
             name=name,
             description=self.description_edit.text().strip(),
             tracks=tracks,
-            analysis=self._base.analysis if self._base else AnalysisConfig(),
+            analysis=(
+                self._base.analysis if self._base else AnalysisConfig()
+            ).model_copy(update={"sensitivity": self.sensitivity.value()}),
         )
         self.accept()
 

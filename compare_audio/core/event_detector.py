@@ -180,7 +180,8 @@ class _Detector:
         self.prog_shape = _shape_features(program.features.log_mel, config)
         self.prog_levels = frame_levels_db(program.features.log_mel)
         self.rec_silent = (
-            context.levels_db <= context.frame_floor_db + config.silence_margin_db
+            context.levels_db
+            <= context.frame_floor_db + config.effective_silence_margin_db
         )
         self.events: list[DetectedEvent] = []
         self.lost_ranges: list[tuple[float, float]] = []  # program content skipped
@@ -194,6 +195,15 @@ class _Detector:
             return self._nothing_found()
         self._refine_edges(runs)
         self.gain_db = self._estimate_gain(runs)
+        if self.gain_db is None:
+            self._add(
+                EventType.UNCERTAIN,
+                Severity.WARN,
+                runs[0].start_s,
+                runs[-1].end_s,
+                runs[0].program_at(runs[0].start_s),
+                "已找到播放內容，但收音不足以確認短暫無聲；請改善收音後重測",
+            )
         for previous, following in zip(runs, runs[1:], strict=False):
             self._classify_transition(previous, following)
         for run in runs:
@@ -210,6 +220,12 @@ class _Detector:
         )
 
     def _nothing_found(self) -> DetectionOutput:
+        if self.live:
+            tracks = [
+                self._report(track, TrackVerdict.NOT_HEARD, 0.0)
+                for track in self.program.tracks
+            ]
+            return DetectionOutput([], [], tracks, None, None)
         self.events.append(
             DetectedEvent(
                 event_type=EventType.TRACK_MISSING,
@@ -293,7 +309,7 @@ class _Detector:
             for k, run in enumerate(runs):
                 crumb = len(run.rec) < _MIN_RUN_POINTS or run.span_s < _MIN_RUN_S
                 if crumb and float(np.median(run.score)) < (
-                    self.config.acquire_threshold + 0.1
+                    self.config.effective_acquire_threshold + 0.1
                 ):
                     del runs[k]
                     changed = True
@@ -302,7 +318,10 @@ class _Detector:
                 if (
                     0 < k < len(runs) - 1
                     and run.span_s < _BLIP_MAX_S
-                    and abs(runs[k - 1].recent_offset() - runs[k + 1].head_offset())
+                    and abs(
+                        runs[k - 1].offset_at(run.rec[0])
+                        - runs[k + 1].offset_at(run.rec[0])
+                    )
                     <= 1.5 * self.tolerance
                 ):
                     del runs[k]
@@ -320,15 +339,23 @@ class _Detector:
                         runs[k + 1] if k + 1 < len(runs) else None,
                     )
                     if other is not None
-                    and abs(other.head_offset() - run.head_offset())
+                    and abs(other.offset_at(run.rec[0]) - run.offset_at(run.rec[0]))
                     > 1.5 * self.tolerance
                 ]
-                if own > 0 and any(
-                    float(np.mean(self._similarity(other, f0, f1)))
-                    >= _REDUNDANT_RATIO * own
-                    for other in neighbours
-                ):
-                    del runs[k]
+                explaining = next(
+                    (
+                        other
+                        for other in neighbours
+                        if float(np.mean(self._similarity(other, f0, f1)))
+                        >= max(0.1, _REDUNDANT_RATIO * own)
+                    ),
+                    None,
+                )
+                if explaining is not None:
+                    # Keep the observed time coverage, under the mapping that
+                    # explains its audio. Deleting it loses whole played tracks.
+                    run.offset = [explaining.offset_at(t) for t in run.rec]
+                    run.fit(self.slope)
                     changed = True
                     break
             runs = self._merge_equal_neighbours(runs)
@@ -339,7 +366,7 @@ class _Detector:
         for run in runs:
             if (
                 merged
-                and abs(merged[-1].recent_offset() - run.head_offset())
+                and abs(merged[-1].offset_at(run.rec[0]) - run.offset_at(run.rec[0]))
                 <= (1.5 * self.tolerance)
                 and not self._silence_between(merged[-1], run)
             ):
@@ -1059,7 +1086,12 @@ class _Detector:
                             hi - run.offset_at(run.end_s),
                         )
                     )
-            heard = sum(hi - lo for lo, hi, _, _ in spans)
+            # Repeats add recording time, not new program coverage.
+            covered_end = track.start_s
+            heard = 0.0
+            for lo, hi, _, _ in sorted(spans):
+                heard += max(0.0, hi - max(lo, covered_end))
+                covered_end = max(covered_end, hi)
             if not spans:
                 if recording_ended and track.start_s >= last_program:
                     reports.append(self._report(track, TrackVerdict.NOT_HEARD, 0.0))

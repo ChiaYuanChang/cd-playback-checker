@@ -44,6 +44,8 @@ class SessionInfo(BaseModel):
 def result_document(result: AnalysisResult, info: SessionInfo) -> dict[str, object]:
     return {
         "session": info.model_dump(),
+        "analysis_config": result.config.model_dump(mode="json"),
+        "recognition_thresholds": result.config.recognition_thresholds(),
         "summary": result.summary.model_dump(mode="json"),
         "tracks": [t.model_dump(mode="json") for t in result.tracks],
         "events": [e.model_dump(mode="json") for e in result.events],
@@ -95,6 +97,12 @@ def write_html(
     colors = {Verdict.PASS: "#2e7d32", Verdict.WARN: "#b7791f", Verdict.FAIL: "#c62828"}
     facts = [
         ("測試片", esc(info.profile_name)),
+        ("辨識靈敏度", str(result.config.sensitivity)),
+        (
+            "匹配 / 鎖定門檻",
+            f"{result.config.effective_match_threshold:.2f} / "
+            f"{result.config.effective_acquire_threshold:.2f}",
+        ),
         ("錄音時間", esc(info.started_at)),
         ("麥克風", esc(info.device or "-")),
         ("備註", esc(info.notes or "-")),

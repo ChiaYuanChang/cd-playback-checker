@@ -124,7 +124,9 @@ class AlignmentTracker:
 
     def _silent_fraction(self, start: int) -> float:
         levels = self._levels.view()[start : start + self._window]
-        return float(np.mean(levels <= self._floor + self._config.silence_margin_db))
+        return float(
+            np.mean(levels <= self._floor + self._config.effective_silence_margin_db)
+        )
 
     def _loudness_db(self, start: int) -> float:
         """How far the louder part of the window stands above the noise floor."""
@@ -139,7 +141,11 @@ class AlignmentTracker:
         match, trusted = self._match(query, start, silent_fraction)
         rec_s = frame_center_s(start + self._window / 2, self._config)
         score = match.score if match is not None else 0.0
-        if trusted and match is not None and score >= self._config.match_threshold:
+        if (
+            trusted
+            and match is not None
+            and score >= self._config.effective_match_threshold
+        ):
             program_s = frame_center_s(match.lag + self._window / 2, self._config)
             return AlignmentPoint(rec_s, program_s, score, PointStatus.MATCHED)
         silent = silent_fraction >= _SILENT_FRACTION
@@ -187,7 +193,10 @@ class AlignmentTracker:
             result = self._local(
                 query, start + self._offset, radius, prefer=not after_silence
             )
-            if result is not None and result.best.score >= config.match_threshold:
+            if (
+                result is not None
+                and result.best.score >= config.effective_match_threshold
+            ):
                 if not silent:
                     self._quiet_steps = 0
                 return self._follow(result, start, clean, after_silence)
@@ -204,7 +213,10 @@ class AlignmentTracker:
             if not clean:
                 return fallback, False
             result = self._local(query, start + self._pending_offset, self._radius // 2)
-            if result is not None and result.best.score >= config.acquire_threshold:
+            if (
+                result is not None
+                and result.best.score >= config.effective_acquire_threshold
+            ):
                 offset = result.best.lag - start
                 if abs(offset - self._pending_offset) <= self._tolerance:
                     self._lock(offset)
@@ -219,7 +231,7 @@ class AlignmentTracker:
         found = self._pick_candidate(
             self._matcher.global_search(query, config.global_candidates), start
         )
-        if found is None or found.score < config.acquire_threshold:
+        if found is None or found.score < config.effective_acquire_threshold:
             self._global_backoff = min(_MAX_GLOBAL_BACKOFF, self._global_backoff + 1)
             self._global_skip = self._global_backoff
             return fallback, False
@@ -247,9 +259,9 @@ class AlignmentTracker:
         margin = 0.0 if after_silence else _JUMP_MARGIN
         strong = (
             clean
-            and result.best.score >= self._config.acquire_threshold
+            and result.best.score >= self._config.effective_acquire_threshold
             and result.best.score >= near_score + margin
-            and self._loudness_db(start) >= self._config.jump_min_loudness_db
+            and self._loudness_db(start) >= self._config.effective_jump_min_loudness_db
         )
         if (
             strong
@@ -259,7 +271,9 @@ class AlignmentTracker:
             self._lock(offset)
             return result.best, True
         self._pending_offset = offset if strong else None
-        trusted = near is not None and near.score >= self._config.match_threshold
+        trusted = (
+            near is not None and near.score >= self._config.effective_match_threshold
+        )
         return near, trusted
 
     def _pick_candidate(

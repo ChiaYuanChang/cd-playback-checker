@@ -106,6 +106,8 @@ class FeatureExtractor:
 
     def push(self, samples: np.ndarray) -> FeatureSet:
         x = np.asarray(samples, dtype=np.float32).reshape(-1)
+        if len(x) == 0:
+            return FeatureSet.empty(self._config.n_mels)
         self.n_samples += len(x)
         log_mel = self._push_stft(x)
         filtered, self._filter_state = sosfilt(self._sos, x, zi=self._filter_state)

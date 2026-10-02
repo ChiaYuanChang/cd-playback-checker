@@ -27,6 +27,13 @@ class AnalysisConfig(BaseModel):
         description="Band used for the fine energy envelope (dropout detection).",
     )
 
+    sensitivity: int = Field(
+        default=50,
+        ge=0,
+        le=100,
+        description="Recognition sensitivity; 50 preserves the profile thresholds.",
+    )
+
     # --- tracking ------------------------------------------------------------
     window_s: float = Field(default=1.5, description="Length of one matching window.")
     step_s: float = Field(default=0.25, description="Tracker step between windows.")
@@ -81,6 +88,36 @@ class AnalysisConfig(BaseModel):
         default=1.5,
         description="Audible track start/end may be missed by this much without error.",
     )
+
+    @property
+    def effective_match_threshold(self) -> float:
+        return min(0.95, max(0.2, self.match_threshold - (self.sensitivity - 50) / 500))
+
+    @property
+    def effective_acquire_threshold(self) -> float:
+        return min(
+            0.99,
+            max(
+                self.effective_match_threshold,
+                self.acquire_threshold - (self.sensitivity - 50) / 500,
+            ),
+        )
+
+    @property
+    def effective_silence_margin_db(self) -> float:
+        return max(0.0, self.silence_margin_db - (self.sensitivity - 50) * 0.06)
+
+    @property
+    def effective_jump_min_loudness_db(self) -> float:
+        return max(0.0, self.jump_min_loudness_db - (self.sensitivity - 50) * 0.12)
+
+    def recognition_thresholds(self) -> dict[str, float]:
+        return {
+            "match_threshold": self.effective_match_threshold,
+            "acquire_threshold": self.effective_acquire_threshold,
+            "silence_margin_db": self.effective_silence_margin_db,
+            "jump_min_loudness_db": self.effective_jump_min_loudness_db,
+        }
 
     @property
     def frame_rate(self) -> float:

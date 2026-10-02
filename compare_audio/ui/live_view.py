@@ -4,9 +4,12 @@ import numpy as np
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QProgressBar,
+    QPushButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
@@ -14,11 +17,17 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from compare_audio.core.analysis_models import EVENT_LABELS, DetectedEvent, Severity
+from compare_audio.core.analysis_models import (
+    EVENT_LABELS,
+    DetectedEvent,
+    Severity,
+    TrackReport,
+)
+from compare_audio.core.live_analysis import LiveDetection
 from compare_audio.core.reference_program import ReferenceProgram
 from compare_audio.core.time_format import format_clock
 from compare_audio.ui import theme
-from compare_audio.ui.plots import TimelinePlots
+from compare_audio.ui.plots import TimelinePlots, WaveformControl
 from compare_audio.ui.workers import LiveUpdate
 
 
@@ -51,7 +60,23 @@ class LiveView(QWidget):
         self.events.verticalHeader().setVisible(False)
         self.events.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        self.plots = TimelinePlots(include_wave=False)
+        self.plots = TimelinePlots()
+        self.follow = QCheckBox("自動跟隨")
+        self.follow.setChecked(True)
+        self.plots.manual_navigation.connect(lambda: self.follow.setChecked(False))
+        self.wave_control = WaveformControl(self.plots)
+        reset = QPushButton("全部顯示")
+        reset.clicked.connect(self.plots.reset_view)
+        self.follow.toggled.connect(self._follow_changed)
+        controls = QHBoxLayout()
+        controls.addWidget(self.follow)
+        controls.addWidget(reset)
+        controls.addWidget(self.wave_control)
+        controls.addStretch(1)
+        self.diagnostics = QLabel("辨識資訊：等待收音")
+        self.diagnostics.setWordWrap(True)
+        self.diagnostics.setStyleSheet("font-size: 12px; color: #555;")
+        self.diagnostics.setMinimumHeight(36)
 
         bottom = QSplitter(Qt.Orientation.Horizontal)
         bottom.addWidget(self.tracks)
@@ -66,20 +91,22 @@ class LiveView(QWidget):
         layout.addWidget(self.status_label)
         layout.addWidget(self.detail_label)
         layout.addWidget(self.progress)
+        layout.addLayout(controls)
+        layout.addWidget(self.diagnostics)
         layout.addWidget(splitter, 1)
         self._program: ReferenceProgram | None = None
         self._bars: list[QProgressBar] = []
-        self._step_s = 0.25
 
     def start(self, program: ReferenceProgram, source_text: str) -> None:
         self._program = program
-        self._step_s = program.config.step_s
         self.status_label.setText("等待音樂開始…")
         self.status_label.setStyleSheet("font-size: 26px; font-weight: bold;")
         self.detail_label.setText(
             f"{source_text}。可以去按播放了，程式會自己找到開頭。"
         )
         self.progress.setVisible(False)
+        self.follow.setChecked(True)
+        self.diagnostics.setText("辨識資訊：等待收音；初步判定每 5 秒更新")
         self.plots.clear_all()
         self.plots.set_tracks(program.tracks)
         self.plots.align.setYRange(0, program.duration_s)
@@ -97,7 +124,7 @@ class LiveView(QWidget):
             bar.setFixedHeight(14)
             self.tracks.setCellWidget(track.index, 1, bar)
             self._bars.append(bar)
-            self.tracks.setItem(track.index, 2, QTableWidgetItem("尚未播放"))
+            self.tracks.setItem(track.index, 2, QTableWidgetItem("等待判定"))
 
     def update_live(self, update: LiveUpdate) -> None:
         program = self._program
@@ -130,26 +157,55 @@ class LiveView(QWidget):
             )
         span = max(60.0, status.rec_s + 5.0)
         self.plots.set_live(update.rec_s, update.program_s, span)
-        self.plots.align.setXRange(0, span, padding=0)
+        if self.follow.isChecked():
+            self.plots.align.setXRange(0, span, padding=0)
         self.plots.set_live_level(update.level_t, update.level_db)
-        self._update_tracks(update, status.track_index)
 
-    def _update_tracks(self, update: LiveUpdate, current: int | None) -> None:
-        program = self._program
-        matched = update.program_s[np.isfinite(update.program_s)]
-        starts = np.array([t.start_s for t in program.tracks])
-        index = np.searchsorted(starts, matched, side="right") - 1
-        for track in program.tracks:
-            heard = float(np.sum(index == track.index)) * self._step_s
-            fraction = min(1.0, heard / max(track.duration_s, 1.0))
-            self._bars[track.index].setValue(int(1000 * fraction))
-            if current == track.index:
-                text = "播放中"
-            elif heard > 0:
-                text = "已播" if fraction > 0.9 else "部分"
+    def _follow_changed(self, checked: bool) -> None:
+        if checked:
+            self.plots.reset_view()
+
+    def set_detection(self, detection: LiveDetection) -> None:
+        self.set_events(detection.events)
+        self._update_tracks(detection.tracks)
+        self.plots.set_envelopes(detection.envelopes, detection.noise_floor_db)
+        score = "—" if detection.match_score is None else f"{detection.match_score:.2f}"
+        snr = (
+            "尚未對齊"
+            if detection.signal_to_noise_db is None
+            else f"{detection.signal_to_noise_db:.1f} dB"
+        )
+        sensitivity = self._program.config.sensitivity if self._program else 50
+        hint = ""
+        if (
+            detection.signal_to_noise_db is not None
+            and detection.signal_to_noise_db < 12
+        ):
+            hint = " · 收音接近背景音，可提高靈敏度或將麥克風靠近喇叭"
+        elif detection.match_score is not None and self._program is not None:
+            if detection.match_score < self._program.config.effective_match_threshold:
+                hint = " · 目前匹配較弱，請確認參考曲目與收音"
+        self.diagnostics.setText(
+            f"靈敏度 {sensitivity} · 匹配分數 {score} · "
+            f"背景音 {detection.noise_floor_db:.1f} dB · 訊噪比 {snr}"
+            " · 初步判定每 5 秒更新" + hint
+        )
+
+    def _update_tracks(self, reports: list[TrackReport]) -> None:
+        for report in reports:
+            fraction = min(1.0, report.heard_s / max(report.duration_s, 1.0))
+            self._bars[report.index].setValue(int(1000 * fraction))
+            if report.fail_count:
+                text = "有問題"
+            elif report.warn_count:
+                text = "需確認"
+            elif fraction > 0.9:
+                text = "已播"
+            elif report.heard_s > 0:
+                text = "部分"
             else:
-                text = "尚未播放"
-            self.tracks.item(track.index, 2).setText(text)
+                text = "尚未確認"
+            self.tracks.item(report.index, 2).setText(text)
 
     def set_events(self, events: list[DetectedEvent]) -> None:
         shown = [e for e in events if e.severity != Severity.INFO]

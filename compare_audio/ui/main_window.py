@@ -1,5 +1,6 @@
 """Main window: wires the setup panel, the workers and the live/result pages."""
 
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -20,7 +21,8 @@ from PySide6.QtWidgets import (
 
 from compare_audio import __version__
 from compare_audio.audio.audio_sources import AudioSource, FileSource, MicrophoneSource
-from compare_audio.core.analysis_models import AnalysisResult, DetectedEvent
+from compare_audio.core.analysis_models import AnalysisResult
+from compare_audio.core.live_analysis import LiveDetection
 from compare_audio.core.reference_program import ReferenceProgram
 from compare_audio.core.report_export import SessionInfo, export_report, write_json
 from compare_audio.core.time_format import format_clock
@@ -183,6 +185,7 @@ class MainWindow(QMainWindow):
             self.setup.show_program(None, str(exc))
             return
         self.profile_path = path
+        self.setup.sensitivity.slider.setValue(self.profile.analysis.sensitivity)
         self.settings.setValue("profile", str(path))
         self.setup.show_program(None, "載入參考音檔中…")
         loader = ReferenceLoader(self.profile, app_paths.cache_dir())
@@ -252,6 +255,13 @@ class MainWindow(QMainWindow):
         answer = QMessageBox.question(self, "確認", text)
         return answer == QMessageBox.StandardButton.Yes
 
+    def _session_program(self) -> ReferenceProgram:
+        assert self.program is not None
+        config = self.program.config.model_copy(
+            update={"sensitivity": self.setup.sensitivity.value()}
+        )
+        return replace(self.program, config=config)
+
     # ------------------------------------------------------------------ recording
     def _on_start_clicked(self) -> None:
         if self.session is not None:
@@ -296,8 +306,9 @@ class MainWindow(QMainWindow):
             device=device_label,
             notes=self.setup.notes_edit.text().strip(),
         )
+        program = self._session_program()
         worker = SessionWorker(
-            self.program, source, wav_path, self.setup.auto_stop.isChecked()
+            program, source, wav_path, self.setup.auto_stop.isChecked()
         )
         worker.level.connect(self.setup.show_session_level)
         worker.updated.connect(self._on_live_update)
@@ -316,7 +327,7 @@ class MainWindow(QMainWindow):
             self.setup.current_device().name if self.setup.current_device() else "",
         )
         self.setup.set_recording(True)
-        self.live.start(self.program, f"收音：{device_label}")
+        self.live.start(program, f"收音：{device_label}")
         self.pages.setCurrentWidget(self.live)
         self._run(worker)
 
@@ -324,8 +335,9 @@ class MainWindow(QMainWindow):
         self.live.update_live(update)
         self.setup.set_elapsed(update.status.rec_s)
 
-    def _on_provisional(self, events: list[DetectedEvent]) -> None:
-        self.live.set_events(events)
+    def _on_provisional(self, detection: LiveDetection | None) -> None:
+        if detection is not None:
+            self.live.set_detection(detection)
 
     def _on_analysing(self) -> None:
         self.setup.set_busy("分析中…")
@@ -359,7 +371,7 @@ class MainWindow(QMainWindow):
         progress.setWindowTitle("分析錄音檔")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumDuration(0)
-        worker = FileAnalysisWorker(self.program, Path(path))
+        worker = FileAnalysisWorker(self._session_program(), Path(path))
         worker.progress.connect(lambda f: progress.setValue(int(100 * f)))
         worker.completed.connect(
             lambda result, p: self._on_file_analysed(result, Path(p))

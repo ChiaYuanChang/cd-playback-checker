@@ -28,6 +28,7 @@ from compare_audio.core.reference_program import ReferenceProgram
 from compare_audio.core.time_format import format_clock
 from compare_audio.ui import theme
 from compare_audio.ui.level_meter import LevelMeter
+from compare_audio.ui.sensitivity_control import SensitivityControl
 
 _QUIET_DBFS = -45.0
 
@@ -111,6 +112,9 @@ class SetupPanel(QWidget):
         options_layout.addWidget(self.folder_edit, 2, 0)
         options_layout.addWidget(browse, 2, 1)
         options_layout.addWidget(self.notes_edit, 3, 0, 1, 2)
+        self.sensitivity = SensitivityControl()
+        options_layout.addWidget(QLabel("辨識靈敏度（當次測試）"), 4, 0, 1, 2)
+        options_layout.addWidget(self.sensitivity, 5, 0, 1, 2)
 
         # --- start / stop
         self.start_button = QPushButton("開始錄音")
@@ -285,6 +289,7 @@ class SetupPanel(QWidget):
             self.device_combo,
             self.all_apis,
             self.track_list,
+            self.sensitivity,
         ):
             widget.setEnabled(not recording)
         if recording:

@@ -84,7 +84,7 @@ def analyze_features(
     if progress:
         progress(0.95)
 
-    envelopes = _envelope_trace(
+    envelopes = build_envelope_trace(
         features,
         program,
         detection.segments,
@@ -135,7 +135,7 @@ def _alignment_trace(points) -> AlignmentTrace:
     )
 
 
-def _envelope_trace(
+def build_envelope_trace(
     features: FeatureSet,
     program: ReferenceProgram,
     segments: list[AlignmentSegment],
@@ -192,7 +192,7 @@ def _envelope_trace(
 
 
 def _signal_to_noise(envelopes: EnvelopeTrace, floor_db: float) -> float | None:
-    mapped = ~np.isnan(envelopes.expected_level_db)
+    mapped = np.isfinite(envelopes.ref_max)
     if mapped.sum() < 50:
         return None
     return round(float(np.median(envelopes.rec_level_db[mapped])) - floor_db, 1)

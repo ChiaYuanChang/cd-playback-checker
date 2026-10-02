@@ -31,3 +31,18 @@ def test_broken_profile_raises(tmp_path):
     bad.write_text("{not json", encoding="utf-8")
     with pytest.raises(ProfileError):
         load_profile(bad)
+
+
+def test_sensitivity_roundtrip_and_old_profile_default(tmp_path):
+    from compare_audio.core.analysis_config import AnalysisConfig
+
+    profile = TestProfile(
+        name="靈敏度",
+        tracks=[TrackSource(title="一", path="01.wav")],
+        analysis=AnalysisConfig(sensitivity=80),
+    )
+    path = save_profile(profile, tmp_path / "sensitive.profile.json")
+    assert load_profile(path).analysis.sensitivity == 80
+    old = tmp_path / "old.profile.json"
+    old.write_text('{"name":"old","tracks":[{"title":"T1","path":"01.wav"}]}')
+    assert load_profile(old).analysis.sensitivity == 50

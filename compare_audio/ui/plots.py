@@ -7,13 +7,15 @@
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
+from PySide6.QtWidgets import QComboBox, QHBoxLayout, QLabel, QWidget
 
 from compare_audio.core.analysis_models import (
     AlignmentSegment,
     AnalysisResult,
     DetectedEvent,
+    EnvelopeTrace,
     Severity,
 )
 from compare_audio.core.reference_program import ReferenceTrack
@@ -85,7 +87,11 @@ class EnvelopeCurve(pg.PlotDataItem):
 
     def set_envelope(self, amplitude: np.ndarray, rate_hz: float) -> None:
         self.rate_hz = rate_hz
-        self._amp = np.nan_to_num(np.asarray(amplitude, np.float32), nan=0.0)
+        self._amp = np.asarray(amplitude, np.float32)
+        self.refresh(None)
+
+    def set_sign(self, sign: float) -> None:
+        self._sign = sign
         self.refresh(None)
 
     def refresh(self, x_range: tuple[float, float] | None) -> None:
@@ -104,7 +110,12 @@ class EnvelopeCurve(pg.PlotDataItem):
         span = self._amp[lo:hi]
         factor = max(1, int(np.ceil(len(span) / _MAX_COLUMNS)))
         usable = (len(span) // factor) * factor
-        columns = span[:usable].reshape(-1, factor).max(axis=1) if usable else span
+        if usable:
+            bins = span[:usable].reshape(-1, factor)
+            columns = np.where(np.isfinite(bins), bins, -np.inf).max(axis=1)
+            columns[~np.isfinite(columns)] = np.nan
+        else:
+            columns = span
         factor = factor if usable else 1
         x = (lo + (np.arange(len(columns)) + 0.5) * factor) / self.rate_hz
         ys = np.zeros(2 * len(columns), np.float32)
@@ -118,7 +129,22 @@ def _event_brush(event: DetectedEvent) -> QColor:
     return color
 
 
+class WaveformControl(QWidget):
+    def __init__(self, plots: "TimelinePlots", parent=None) -> None:
+        super().__init__(parent)
+        self.mode = QComboBox()
+        self.mode.addItems(["波形疊圖", "波形上下比較"])
+        self.mode.setToolTip("顯示對齊後的振幅包絡，參考振幅已校正；空白表示尚未對齊")
+        self.mode.currentIndexChanged.connect(lambda i: plots.set_wave_mode(i == 1))
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(QLabel("比較方式"))
+        layout.addWidget(self.mode)
+
+
 class TimelinePlots(pg.GraphicsLayoutWidget):
+    manual_navigation = Signal()
+
     def __init__(self, parent=None, include_wave: bool = True) -> None:
         super().__init__(parent)
         self.setBackground(theme.SURFACE)
@@ -163,12 +189,14 @@ class TimelinePlots(pg.GraphicsLayoutWidget):
         )
         self._segments: list[AlignmentSegment] = []
         self._rec_env = EnvelopeCurve(1.0, theme.RECORDING)
-        self._ref_env = EnvelopeCurve(-1.0, theme.REFERENCE)
+        self._ref_env = EnvelopeCurve(1.0, theme.REFERENCE)
+        self._split_wave = False
+        self._wave_peak = 1.0
         wave_legend = self.wave.addLegend(offset=(8, 2), labelTextSize="9pt")
         self.wave.addItem(self._rec_env)
         self.wave.addItem(self._ref_env)
-        wave_legend.addItem(self._rec_env, "上：錄音")
-        wave_legend.addItem(self._ref_env, "下：參考（已對齊）")
+        wave_legend.addItem(self._rec_env, "錄音")
+        wave_legend.addItem(self._ref_env, "參考（已對齊、振幅校正）")
         level_legend = self.level.addLegend(offset=(8, 2), labelTextSize="9pt")
         self._rec_level = self.level.plot(
             [], [], pen=pg.mkPen(theme.RECORDING, width=1), name="錄音音量"
@@ -185,6 +213,10 @@ class TimelinePlots(pg.GraphicsLayoutWidget):
         self._decorations: list[tuple[pg.PlotItem, pg.GraphicsObject]] = []
         self._highlight: list[tuple[pg.PlotItem, pg.LinearRegionItem]] = []
         self.align.sigXRangeChanged.connect(self._on_range)
+        for plot in (self.align, self.wave, self.level):
+            plot.getViewBox().sigRangeChangedManually.connect(
+                lambda _: self.manual_navigation.emit()
+            )
         self._duration = 0.0
 
     # ------------------------------------------------------------------ data
@@ -230,19 +262,7 @@ class TimelinePlots(pg.GraphicsLayoutWidget):
                 np.nan,
             ]
         self._line.setData(np.array(xs), np.array(ys))
-        env = result.envelopes
-        rec_amp = np.maximum(np.abs(env.rec_min), np.abs(env.rec_max))
-        ref_amp = np.maximum(np.abs(env.ref_min), np.abs(env.ref_max))
-        self._rec_env.set_envelope(rec_amp, env.rate_hz)
-        self._ref_env.set_envelope(ref_amp, env.rate_hz)
-        t = np.arange(len(env.rec_level_db)) / env.rate_hz
-        self._rec_level.setData(t, env.rec_level_db)
-        self._expected.setData(t, env.expected_level_db, connect="finite")
-        peak = float(np.nanpercentile(rec_amp, 99.5)) if len(rec_amp) else 1.0
-        self.wave.setYRange(-peak * 1.1, peak * 1.1, padding=0)
-        if len(env.rec_level_db):
-            top = float(np.nanmax(env.rec_level_db)) + 3
-            self.level.setYRange(result.summary.noise_floor_db - 5, top, padding=0)
+        self.set_envelopes(result.envelopes, result.summary.noise_floor_db)
         for event in result.events:
             start = event.rec_start_s
             end = max(event.rec_end_s, start + _MIN_EVENT_WIDTH_S)
@@ -257,6 +277,35 @@ class TimelinePlots(pg.GraphicsLayoutWidget):
                 self._decorate(plot, region)
         self._duration = result.summary.recording_duration_s
         self.reset_view()
+
+    def set_wave_mode(self, split: bool) -> None:
+        self._split_wave = split
+        self._ref_env.set_sign(-1.0 if split else 1.0)
+        self._on_range(None, self.align.viewRange()[0])
+        self._set_wave_range()
+
+    def _set_wave_range(self) -> None:
+        low = -self._wave_peak * 1.1 if self._split_wave else 0.0
+        self.wave.setYRange(low, self._wave_peak * 1.1, padding=0)
+
+    def set_envelopes(self, env: EnvelopeTrace, floor_db: float) -> None:
+        rec_amp = np.maximum(np.abs(env.rec_min), np.abs(env.rec_max))
+        ref_amp = np.maximum(np.abs(env.ref_min), np.abs(env.ref_max))
+        self._rec_env.set_envelope(rec_amp, env.rate_hz)
+        self._ref_env.set_envelope(ref_amp, env.rate_hz)
+        t = (np.arange(len(env.rec_level_db)) + 0.5) / env.rate_hz
+        self._rec_level.setData(t, env.rec_level_db)
+        self._expected.setData(t, env.expected_level_db, connect="finite")
+        amplitudes = np.concatenate([rec_amp, ref_amp])
+        finite = amplitudes[np.isfinite(amplitudes)]
+        self._wave_peak = (
+            max(float(np.percentile(finite, 99.5)), 1e-6) if len(finite) else 1.0
+        )
+        self._set_wave_range()
+        self._on_range(None, self.align.viewRange()[0])
+        if len(env.rec_level_db):
+            top = float(np.nanmax(env.rec_level_db)) + 3
+            self.level.setYRange(floor_db - 5, max(floor_db + 1, top), padding=0)
 
     def set_live(self, rec_s: np.ndarray, program_s: np.ndarray, span_s: float) -> None:
         self._line.setData(rec_s, program_s)

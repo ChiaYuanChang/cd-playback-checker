@@ -34,7 +34,7 @@ from compare_audio.core.report_export import (
 )
 from compare_audio.core.time_format import format_clock
 from compare_audio.ui import theme
-from compare_audio.ui.plots import TimelinePlots
+from compare_audio.ui.plots import TimelinePlots, WaveformControl
 
 _CLIP_MARGIN_S = 1.5
 
@@ -60,10 +60,13 @@ class ResultView(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.verdict)
         top.addWidget(self.summary, 1)
-        for button in (reset, folder, export):
-            top.addWidget(button)
-
         self.plots = TimelinePlots()
+        self.wave_control = WaveformControl(self.plots)
+        controls = QHBoxLayout()
+        controls.addWidget(self.wave_control)
+        controls.addStretch(1)
+        for button in (reset, folder, export):
+            controls.addWidget(button)
 
         self.events = QTableWidget(0, 6)
         self.events.setHorizontalHeaderLabels(
@@ -122,6 +125,7 @@ class ResultView(QWidget):
         splitter.setSizes([460, 280])
         layout = QVBoxLayout(self)
         layout.addLayout(top)
+        layout.addLayout(controls)
         layout.addWidget(splitter, 1)
 
         self.result: AnalysisResult | None = None

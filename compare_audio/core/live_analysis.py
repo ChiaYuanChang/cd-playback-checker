@@ -14,10 +14,19 @@ from compare_audio.core.alignment_tracker import (
     AlignmentTracker,
     estimate_noise_floor_db,
 )
-from compare_audio.core.analysis_models import AnalysisResult, DetectedEvent
+from compare_audio.core.analysis_models import (
+    AnalysisResult,
+    DetectedEvent,
+    EnvelopeTrace,
+    TrackReport,
+)
 from compare_audio.core.event_detector import RecordingContext, detect_events
 from compare_audio.core.growing_array import GrowingArray
-from compare_audio.core.recording_analysis import ProgressCallback, analyze_features
+from compare_audio.core.recording_analysis import (
+    ProgressCallback,
+    analyze_features,
+    build_envelope_trace,
+)
 from compare_audio.core.reference_program import ReferenceProgram
 from compare_audio.core.spectral_features import (
     FeatureExtractor,
@@ -34,6 +43,16 @@ class LiveStatus:
     track_index: int | None
     track_position_s: float | None
     last_track_done: bool
+
+
+@dataclass(frozen=True)
+class LiveDetection:
+    events: list[DetectedEvent]
+    tracks: list[TrackReport]
+    envelopes: EnvelopeTrace
+    noise_floor_db: float
+    signal_to_noise_db: float | None
+    match_score: float | None
 
 
 class LiveAnalyzer:
@@ -92,11 +111,11 @@ class LiveAnalyzer:
             last_track_done=done,
         )
 
-    def provisional_events(self) -> list[DetectedEvent]:
-        """Events found so far (the newest seconds may still change)."""
+    def provisional_detection(self) -> LiveDetection | None:
+        """One consistent snapshot for coverage, early warnings and waveforms."""
         features = self.features()
         if len(features.log_mel) == 0:
-            return []
+            return None
         levels = frame_levels_db(features.log_mel)
         context = RecordingContext(
             features=features,
@@ -108,7 +127,33 @@ class LiveAnalyzer:
         detection = detect_events(
             self.points, context, self.program, self.config, live=True
         )
-        return detection.events
+        envelopes = build_envelope_trace(
+            features,
+            self.program,
+            detection.segments,
+            detection.gain_db,
+            context.env_floor_db,
+            self.config,
+        )
+        mapped = np.isfinite(envelopes.ref_max)
+        snr = (
+            float(np.median(envelopes.rec_level_db[mapped])) - context.env_floor_db
+            if mapped.any()
+            else None
+        )
+        scores = [p.score for p in self.points[-8:]]
+        return LiveDetection(
+            detection.events,
+            detection.tracks,
+            envelopes,
+            context.env_floor_db,
+            snr,
+            float(np.median(scores)) if scores else None,
+        )
+
+    def provisional_events(self) -> list[DetectedEvent]:
+        detection = self.provisional_detection()
+        return detection.events if detection is not None else []
 
     def finish(self, progress: ProgressCallback | None = None) -> AnalysisResult:
         features = self.features()

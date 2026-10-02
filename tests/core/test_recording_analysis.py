@@ -100,3 +100,11 @@ def test_live_analyzer_matches_offline(program, tracks_audio):
     offline = analyze_signal(recording, program)
     assert final.summary.verdict == offline.summary.verdict == Verdict.PASS
     assert len(final.segments) == len(offline.segments)
+
+
+def test_repeat_does_not_inflate_played_coverage(program, tracks_audio):
+    repeated = np.concatenate([tracks_audio[0], tracks_audio[0], tracks_audio[1]])
+    result = analyze_signal(room(repeated, 2), program)
+    assert any(e.event_type == EventType.REPEAT for e in result.events)
+    assert result.summary.heard_ratio <= 1
+    assert all(track.heard_s <= track.duration_s for track in result.tracks)

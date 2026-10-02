@@ -67,7 +67,7 @@ class SessionWorker(QThread):
 
     level = Signal(float, float, bool)  # peak dBFS, rms dBFS, clipped
     updated = Signal(object)  # LiveUpdate
-    provisional = Signal(list)  # list[DetectedEvent]
+    provisional = Signal(object)  # LiveDetection
     auto_stopping = Signal(str)  # reason
     analysing = Signal()
     analysis_progress = Signal(float)
@@ -163,11 +163,12 @@ class SessionWorker(QThread):
                             self.auto_stopping.emit("錄音已超過節目長度")
                             break
                 if now - last_events >= _EVENTS_EVERY_S:
-                    self.provisional.emit(live.provisional_events())
+                    self.provisional.emit(live.provisional_detection())
                     last_events = time.monotonic()
         self.source.stop()
         live.push(resampler.resample_chunk(np.zeros(0, np.float32), last=True))
         self.updated.emit(self._snapshot(live))
+        self.provisional.emit(live.provisional_detection())
         return live
 
     def _snapshot(self, live: LiveAnalyzer) -> LiveUpdate:

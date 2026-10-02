@@ -36,3 +36,16 @@ def test_mel_filters_cover_every_band(config):
     bank = mel_filterbank(config)
     assert bank.shape == (config.n_fft // 2 + 1, config.n_mels)
     assert np.all(bank.sum(axis=0) > 0)
+
+
+def test_empty_push_preserves_streaming_filter_and_pending_frames(config):
+    signal = np.random.default_rng(4).normal(0, 0.1, 32000).astype(np.float32)
+    extractor = FeatureExtractor(config)
+    first = extractor.push(signal[:999])
+    empty = extractor.push(np.zeros(0, np.float32))
+    assert len(empty.log_mel) == len(empty.band_env_db) == 0
+    second = extractor.push(signal[999:])
+    streamed = FeatureSet.concatenate([first, empty, second], config.n_mels)
+    batch = extract_features(signal, config)
+    np.testing.assert_allclose(streamed.log_mel, batch.log_mel, atol=1e-3)
+    np.testing.assert_allclose(streamed.band_env_db, batch.band_env_db, atol=1e-3)
