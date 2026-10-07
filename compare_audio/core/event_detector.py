@@ -73,6 +73,7 @@ _BOUNDARY_BACK_S = 1.0
 _GAP_SOUND_S = 0.5
 _MIN_REPORTED_GAP_S = 0.1
 _SOFT_DB = 10.0
+_MAX_DRIFT = 0.01  # sanity limit; a webcam + CD player pair measured 0.36% (3600 ppm)
 _ENDING_EVENTS = (EventType.STOPPED, EventType.RECORDING_ENDED, EventType.UNCERTAIN)
 
 
@@ -123,9 +124,6 @@ class _Run:
 
     def recent_offset(self) -> float:
         return float(np.median(self.offset[-5:]))
-
-    def head_offset(self) -> float:
-        return float(np.median(self.offset[:5]))
 
     def offset_at(self, rec_s: float) -> float:
         return float(self.intercept + self.slope * (rec_s - self.t_ref))
@@ -274,7 +272,7 @@ class _Detector:
                 numerator += float(np.sum(centered * (off - off.mean())))
                 denominator += float(np.sum(centered * centered))
         slope = numerator / denominator if denominator > 100.0 else 0.0
-        self.slope = float(np.clip(slope, -1e-3, 1e-3))
+        self.slope = float(np.clip(slope, -_MAX_DRIFT, _MAX_DRIFT))
         for run in runs:
             run.fit(self.slope)
 
@@ -302,7 +300,10 @@ class _Detector:
                 if (
                     0 < k < len(runs) - 1
                     and run.span_s < _BLIP_MAX_S
-                    and abs(runs[k - 1].recent_offset() - runs[k + 1].head_offset())
+                    and abs(
+                        runs[k - 1].offset_at(run.rec[0])
+                        - runs[k + 1].offset_at(run.rec[0])
+                    )
                     <= 1.5 * self.tolerance
                 ):
                     del runs[k]
@@ -320,7 +321,7 @@ class _Detector:
                         runs[k + 1] if k + 1 < len(runs) else None,
                     )
                     if other is not None
-                    and abs(other.head_offset() - run.head_offset())
+                    and abs(other.offset_at(run.rec[0]) - run.offset_at(run.rec[0]))
                     > 1.5 * self.tolerance
                 ]
                 if own > 0 and any(
@@ -339,7 +340,7 @@ class _Detector:
         for run in runs:
             if (
                 merged
-                and abs(merged[-1].recent_offset() - run.head_offset())
+                and abs(merged[-1].offset_at(run.rec[0]) - run.offset_at(run.rec[0]))
                 <= (1.5 * self.tolerance)
                 and not self._silence_between(merged[-1], run)
             ):
