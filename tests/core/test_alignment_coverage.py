@@ -5,13 +5,15 @@ import pytest
 
 from compare_audio.core.alignment_tracker import AlignmentPoint, PointStatus
 from compare_audio.core.analysis_config import AnalysisConfig
-from compare_audio.core.analysis_models import EventType
+from compare_audio.core.analysis_models import EventType, Severity
 from compare_audio.core.event_detector import RecordingContext, detect_events
 from compare_audio.core.reference_program import ReferenceProgram, ReferenceTrack
 from compare_audio.core.spectral_features import FeatureSet, frame_levels_db
 
 
-@pytest.mark.parametrize("drift", [0.000775, -0.000775])
+# 0.36% is a real webcam + CD player pair; beyond the old 0.1% limit the fitted
+# lines drifted off the audio and every quiet beat became a "dropout".
+@pytest.mark.parametrize("drift", [0.000775, -0.000775, 0.0036, -0.0036])
 def test_36_minute_drift_with_track_silences_preserves_every_track(drift):
     # Reduced feature rate keeps a full-length detector test small; use actual
     # per-frame similarity and coverage processing, without mocked similarity.
@@ -63,8 +65,9 @@ def test_36_minute_drift_with_track_silences_preserves_every_track(drift):
     assert all(track.heard_s > 215 for track in detection.tracks)
     assert not any(e.event_type == EventType.TRACK_MISSING for e in detection.events)
     assert detection.segments[0].rec_start_s < 5
-    assert detection.segments[-1].rec_end_s > 2195
-    assert abs(detection.segments[0].drift_ppm) == pytest.approx(775, abs=1)
+    assert detection.segments[-1].rec_end_s > pre_roll + 2195 / (1 + drift)
+    assert detection.segments[0].drift_ppm == pytest.approx(drift * 1e6, abs=1)
+    assert not any(e.severity == Severity.FAIL for e in detection.events)
 
 
 def test_correcting_redundant_mapping_keeps_observed_audio(program):

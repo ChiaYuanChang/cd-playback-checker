@@ -73,6 +73,7 @@ _BOUNDARY_BACK_S = 1.0
 _GAP_SOUND_S = 0.5
 _MIN_REPORTED_GAP_S = 0.1
 _SOFT_DB = 10.0
+_MAX_DRIFT = 0.01  # sanity limit; a webcam + CD player pair measured 0.36% (3600 ppm)
 _ENDING_EVENTS = (EventType.STOPPED, EventType.RECORDING_ENDED, EventType.UNCERTAIN)
 
 
@@ -290,7 +291,7 @@ class _Detector:
                 numerator += float(np.sum(centered * (off - off.mean())))
                 denominator += float(np.sum(centered * centered))
         slope = numerator / denominator if denominator > 100.0 else 0.0
-        self.slope = float(np.clip(slope, -1e-3, 1e-3))
+        self.slope = float(np.clip(slope, -_MAX_DRIFT, _MAX_DRIFT))
         for run in runs:
             run.fit(self.slope)
 
