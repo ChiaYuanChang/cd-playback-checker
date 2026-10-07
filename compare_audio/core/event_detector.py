@@ -122,6 +122,11 @@ class _Run:
     def span_s(self) -> float:
         return self.rec[-1] - self.rec[0]
 
+    @property
+    def is_crumb(self) -> bool:
+        """Too short for its own offset to mean anything."""
+        return len(self.rec) < _MIN_RUN_POINTS or self.span_s < _MIN_RUN_S
+
     def recent_offset(self) -> float:
         return float(np.median(self.offset[-5:]))
 
@@ -289,8 +294,7 @@ class _Detector:
         while changed and len(runs) > 1:
             changed = False
             for k, run in enumerate(runs):
-                crumb = len(run.rec) < _MIN_RUN_POINTS or run.span_s < _MIN_RUN_S
-                if crumb and float(np.median(run.score)) < (
+                if run.is_crumb and float(np.median(run.score)) < (
                     self.config.acquire_threshold + 0.1
                 ):
                     del runs[k]
@@ -321,6 +325,7 @@ class _Detector:
                         runs[k + 1] if k + 1 < len(runs) else None,
                     )
                     if other is not None
+                    and not other.is_crumb
                     and abs(other.offset_at(run.rec[0]) - run.offset_at(run.rec[0]))
                     > 1.5 * self.tolerance
                 ]
