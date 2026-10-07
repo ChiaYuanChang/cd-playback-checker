@@ -125,9 +125,6 @@ class _Run:
     def recent_offset(self) -> float:
         return float(np.median(self.offset[-5:]))
 
-    def head_offset(self) -> float:
-        return float(np.median(self.offset[:5]))
-
     def offset_at(self, rec_s: float) -> float:
         return float(self.intercept + self.slope * (rec_s - self.t_ref))
 
