@@ -11,6 +11,57 @@ from compare_audio.core.reference_program import ReferenceProgram, ReferenceTrac
 from compare_audio.core.spectral_features import FeatureSet, frame_levels_db
 
 
+def test_one_stray_match_cannot_move_the_run_before_a_skip():
+    # A single match 70 ms off, right where the player skipped 3 s, used to
+    # "explain" the correct run before it: the run was deleted (tracks reported
+    # missing or unconfirmed) or moved by 70 ms (false dropouts).
+    config = AnalysisConfig(hop=800, n_mels=8, envelope_rate_hz=20)
+    rate = config.frame_rate
+    rng = np.random.default_rng(3)
+    # Two-second chords: shifted by 70 ms they still match almost as well.
+    chords = rng.normal(-25, 5, (20, 8))
+    mel = np.repeat(chords, int(2 * rate), axis=0).astype(np.float32)
+    env = np.full(len(mel), -20.0, np.float32)
+    amp = 10 ** (env / 20)
+    program = ReferenceProgram(
+        config,
+        [ReferenceTrack(i, f"T{i}", "", i * 20.0, 20.0) for i in range(2)],
+        FeatureSet(mel, env, -amp, amp),
+    )
+    rec_t = (np.arange(int(38.5 * rate)) + 0.5) / rate
+    prog_t = np.where(rec_t < 31, rec_t - 1, rec_t + 2)  # skips 3 s at 31 s
+    idx = np.floor(prog_t * rate).astype(int)
+    valid = (idx >= 0) & (idx < len(mel))
+    rec_mel = np.full((len(rec_t), 8), -70.0, np.float32)
+    rec_env = np.full(len(rec_t), -70.0, np.float32)
+    rec_mel[valid] = mel[idx[valid]]
+    rec_env[valid] = env[idx[valid]]
+    rec_amp = 10 ** (rec_env / 20)
+    context = RecordingContext(
+        FeatureSet(rec_mel, rec_env, -rec_amp, rec_amp),
+        frame_levels_db(rec_mel),
+        -70,
+        -70,
+        38.5,
+    )
+    points = [
+        AlignmentPoint(t, t - 1, 0.9, PointStatus.MATCHED)
+        for t in np.arange(2, 30.6, 0.25)
+    ]
+    points.append(AlignmentPoint(30.75, 30.75 - 0.93, 0.9, PointStatus.MATCHED))
+    points += [
+        AlignmentPoint(t, t + 2, 0.9, PointStatus.MATCHED)
+        for t in np.arange(31.5, 37.6, 0.25)
+    ]
+    detection = detect_events(points, context, program, config)
+    before = detection.segments[0]
+    assert before.rec_start_s < 2
+    assert before.offset_s == pytest.approx(-1, abs=0.02)
+    reported = [e for e in detection.events if e.severity != Severity.INFO]
+    assert [e.event_type for e in reported] == [EventType.SKIP]
+    assert reported[0].jump_s == pytest.approx(3, abs=0.1)
+
+
 # 0.36% is a real webcam + CD player pair; beyond the old 0.1% limit the fitted
 # lines drifted off the audio and every quiet beat became a "dropout".
 @pytest.mark.parametrize("drift", [0.000775, -0.000775, 0.0036, -0.0036])
